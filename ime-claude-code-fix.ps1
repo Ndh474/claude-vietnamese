@@ -2,27 +2,27 @@
 <#
 .SYNOPSIS
     Claude Code Vietnamese IME Fix - Windows (v2.1.9+)
-    Fix loi go tieng Viet trong Claude Code CLI
+    Fix Vietnamese typing issues in Claude Code CLI
 
 .DESCRIPTION
-    Script nay patch Claude Code de fix loi:
-    - Bo go tieng Viet (EVKey, Unikey, OpenKey...) gui ky tu DEL (0x7F)
-    - Claude Code xu ly backspace nhung khong insert text thay the
+    This script patches Claude Code to fix:
+    - Vietnamese IMEs (EVKey, Unikey, OpenKey...) send DEL character (0x7F)
+    - Claude Code handles backspace but does not insert replacement text
     
-    Ho tro:
-    - Ban npm (cli.js)
-    - Ban binary claude.exe (v2.1.38+ da test)
+    Supports:
+    - npm package (cli.js)
+    - Binary claude.exe (v2.1.38+ tested)
 
 .PARAMETER Action
-    patch   - Ap dung patch (default)
-    restore - Khoi phuc ban goc tu backup
-    check   - Kiem tra chi tiet (quyen ghi, pattern, backup, smoke test)
+    patch   - Apply patch (default)
+    restore - Restore original from backup
+    check   - Detailed check (write access, pattern, backup, smoke test)
 
 .EXAMPLE
-    .\patch-claude-vn-v2.1.9.ps1
-    .\patch-claude-vn-v2.1.9.ps1 patch
-    .\patch-claude-vn-v2.1.9.ps1 restore
-    .\patch-claude-vn-v2.1.9.ps1 check
+    .\ime-claude-code-fix.ps1
+    .\ime-claude-code-fix.ps1 patch
+    .\ime-claude-code-fix.ps1 restore
+    .\ime-claude-code-fix.ps1 check
 #>
 
 [CmdletBinding()]
@@ -57,7 +57,7 @@ function Write-Header {
     Write-Host ""
     Write-ColorLine "============================================================" "Cyan"
     Write-ColorLine "  Claude Code Vietnamese IME Fix - v2.1.9+" "Cyan"
-    Write-ColorLine "  Fix loi go tieng Viet trong Claude Code CLI" "Cyan"
+    Write-ColorLine "  Fix Vietnamese typing issues in Claude Code CLI" "Cyan"
     Write-ColorLine "============================================================" "Cyan"
     Write-Host ""
 }
@@ -159,6 +159,82 @@ function Get-ClaudeVersion {
     }
 }
 
+function Get-ClaudeProcesses {
+    # Find all running claude processes
+    $processes = @()
+    
+    # Find claude.exe
+    $claudeExe = Get-Process -Name "claude" -ErrorAction SilentlyContinue
+    if ($claudeExe) {
+        $processes += $claudeExe
+    }
+    
+    # Find node process running cli.js (for npm install)
+    $nodeProcesses = Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
+        try {
+            $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+            $cmdLine -match "claude-code" -or $cmdLine -match "@anthropic-ai"
+        } catch { $false }
+    }
+    if ($nodeProcesses) {
+        $processes += $nodeProcesses
+    }
+    
+    return $processes
+}
+
+function Stop-ClaudeProcesses {
+    param([switch]$Force)
+    
+    $processes = Get-ClaudeProcesses
+    
+    if ($processes.Count -eq 0) {
+        return $true
+    }
+    
+    Write-Host ""
+    Write-ColorLine "! Detected running Claude Code processes:" "Yellow"
+    foreach ($proc in $processes) {
+        Write-Host "   - $($proc.ProcessName) (PID: $($proc.Id))"
+    }
+    Write-Host ""
+    
+    if (-not $Force) {
+        Write-ColorLine "? This action will CLOSE ALL running Claude Code sessions." "Yellow"
+        Write-ColorLine "  Any unsaved work will be lost!" "Red"
+        Write-Host ""
+        $confirm = Read-Host "  Do you want to continue? (y/N)"
+        
+        if ($confirm -notmatch '^[yY]$') {
+            Write-ColorLine "-> Cancelled. Please close Claude Code manually and try again." "Cyan"
+            return $false
+        }
+    }
+    
+    Write-ColorLine "-> Closing Claude Code processes..." "Yellow"
+    foreach ($proc in $processes) {
+        try {
+            $proc | Stop-Process -Force -ErrorAction Stop
+            Write-Host "   Closed: $($proc.ProcessName) (PID: $($proc.Id))"
+        } catch {
+            Write-ColorLine "   Failed to close: $($proc.ProcessName) (PID: $($proc.Id))" "Red"
+        }
+    }
+    
+    # Wait a bit for processes to fully terminate
+    Start-Sleep -Milliseconds 500
+    
+    # Check again
+    $remaining = Get-ClaudeProcesses
+    if ($remaining.Count -gt 0) {
+        Write-ColorLine "X Some Claude processes are still running. Please close them manually." "Red"
+        return $false
+    }
+    
+    Write-ColorLine "   All Claude Code processes closed." "Green"
+    return $true
+}
+
 function Test-WriteAccess {
     param([string]$Directory, [ref]$ErrorText)
 
@@ -182,25 +258,25 @@ function Invoke-Patch {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $backupPath = "$CliPath.backup-$timestamp"
     
-    Write-ColorLine "-> Dang tao backup..." "Yellow"
+    Write-ColorLine "-> Creating backup..." "Yellow"
     Copy-Item $CliPath $backupPath -Force
     Write-Host "   Backup: $backupPath"
     
-    Write-ColorLine "-> Dang phan tich va ap dung patch..." "Yellow"
+    Write-ColorLine "-> Analyzing and applying patch..." "Yellow"
     
     $content = Get-Content $CliPath -Raw -Encoding UTF8
     
     if ($content -match [regex]::Escape($PATCH_MARKER)) {
-        Write-ColorLine "   Da patch truoc do." "Green"
+        Write-ColorLine "   Already patched." "Green"
         return $true
     }
     
     $patched = $false
     
-    # Pattern alternatives cho cac version khac nhau
-    # v2.1.11: T(CA.offset)}Qe1(),Be1();return}  - Bien: l=input, S=cursor, CA=cursorAfter, Q=setText, T=setOffset
-    # v2.1.9:  j(_A.offset)}Oe1(),Me1();return}  - Bien: n=input, P=cursor, _A=cursorAfter, Q=setText, j=setOffset
-    # v2.1.7:  _(FA.offset)}...                  - Bien: s=input, j=cursor, FA=cursorAfter, Q=setText, _=setOffset
+    # Pattern alternatives for different versions
+    # v2.1.11: T(CA.offset)}Qe1(),Be1();return}  - Vars: l=input, S=cursor, CA=cursorAfter, Q=setText, T=setOffset
+    # v2.1.9:  j(_A.offset)}Oe1(),Me1();return}  - Vars: n=input, P=cursor, _A=cursorAfter, Q=setText, j=setOffset
+    # v2.1.7:  _(FA.offset)}...                  - Vars: s=input, j=cursor, FA=cursorAfter, Q=setText, _=setOffset
     
     $altPatterns = @(
         @{ Search = 'T(CA.offset)}Qe1(),Be1();return}'; Var = 'CA'; Input = 'l'; Cursor = 'S'; SetOffset = 'T'; Version = 'v2.1.11' },
@@ -213,25 +289,25 @@ function Invoke-Patch {
         $idx = $content.IndexOf($alt.Search)
         if ($idx -eq -1) { continue }
         
-        # Kiem tra context - phai co backspace() va \x7f
+        # Check context - must have backspace() and \x7f
         $startCtx = [Math]::Max(0, $idx - 500)
         $context = $content.Substring($startCtx, $idx - $startCtx)
         
         if (($context -match 'backspace\(\)') -and ($context -match '\\x7f|\.includes\(')) {
-            Write-Host "   Tim thay pattern $($alt.Version)"
+            Write-Host "   Found pattern $($alt.Version)"
             
             $varName = $alt.Var
             $inputVar = $alt.Input
             $cursorVar = $alt.Cursor
             $setOffsetFn = $alt.SetOffset
             
-            # Fix code: replay input theo stream event de giu dung thu tu IME
-            # Su dung string concatenation de tranh PowerShell expand variables sai cach
+            # Fix code: replay input as stream events to maintain IME order
+            # Use string concatenation to avoid PowerShell variable expansion issues
             $fixCode = $PATCH_MARKER + 'let _phtv_seq=' + $cursorVar + ';for(const _c of ' + $inputVar + '){_phtv_seq=(_c==="\x7f"||_c==="\x08")?_phtv_seq.backspace():_phtv_seq.insert(_c)}if(!' + $cursorVar + '.equals(_phtv_seq)){if(' + $cursorVar + '.text!==_phtv_seq.text)Q(_phtv_seq.text);' + $setOffsetFn + '(_phtv_seq.offset)}'
             
-            # Tim vi tri insert - sau pattern nhung truoc Qe1/Oe1 hoac return
+            # Find insert point - after pattern but before Qe1/Oe1 or return
             if ($alt.Search -match '\}$') {
-                # Pattern ket thuc bang }, insert truoc return
+                # Pattern ends with }, insert before return
                 $insertPoint = $idx + $alt.Search.Length - 'return}'.Length
             } else {
                 $insertPoint = $idx + $alt.Search.Length
@@ -244,8 +320,8 @@ function Invoke-Patch {
     }
     
     if (-not $patched) {
-        Write-ColorLine "   Khong tim thay pattern can patch." "Red"
-        Write-Host "   Code structure co the da thay doi trong phien ban moi."
+        Write-ColorLine "   Pattern not found." "Red"
+        Write-Host "   Code structure may have changed in newer version."
         return $false
     }
     
@@ -258,13 +334,13 @@ function Invoke-Patch {
         if ($verifyContent -match [regex]::Escape($PATCH_MARKER)) {
             return $true
         } else {
-            Write-ColorLine "-> Patch that bai, dang khoi phuc..." "Yellow"
+            Write-ColorLine "-> Patch failed, restoring..." "Yellow"
             Copy-Item $backupPath $CliPath -Force
             return $false
         }
     } else {
-        Write-ColorLine "   Khong tim thay pattern can patch." "Red"
-        Write-Host "   Code structure co the da thay doi trong phien ban moi."
+        Write-ColorLine "   Pattern not found." "Red"
+        Write-Host "   Code structure may have changed in newer version."
         return $false
     }
 }
@@ -286,28 +362,28 @@ function Invoke-PatchExe {
     $markerCountBefore = ([regex]::Matches($content, [regex]::Escape($EXE_PATCH_MARKER))).Count
 
     if (($totalOldCount -eq 0) -and ($markerCountBefore -gt 0)) {
-        Write-ColorLine "   Da patch truoc do." "Green"
+        Write-ColorLine "   Already patched." "Green"
         return $true
     }
 
     if ($totalOldCount -lt 1) {
-        Write-ColorLine "   Khong tim thay pattern can patch trong binary." "Red"
-        Write-Host "   Code structure co the da thay doi trong phien ban moi."
+        Write-ColorLine "   Pattern not found in binary." "Red"
+        Write-Host "   Code structure may have changed in newer version."
         return $false
     }
 
-    Write-ColorLine "-> Dang tao backup..." "Yellow"
+    Write-ColorLine "-> Creating backup..." "Yellow"
     Copy-Item $ExePath $backupPath -Force
     Write-Host "   Backup: $backupPath"
 
-    Write-ColorLine "-> Dang phan tich va ap dung patch binary..." "Yellow"
+    Write-ColorLine "-> Analyzing and applying binary patch..." "Yellow"
 
     $patchedContent = $content
     $matched = @()
 
     foreach ($pattern in $EXE_PATTERNS) {
         if ($pattern.NewCore.Length -gt $pattern.Old.Length) {
-            Write-ColorLine "X Loi noi bo: payload patch cho exe dai hon block goc ($($pattern.Version))." "Red"
+            Write-ColorLine "X Internal error: patch payload longer than original block ($($pattern.Version))." "Red"
             return $false
         }
 
@@ -330,14 +406,14 @@ function Invoke-PatchExe {
     $markerCount = ([regex]::Matches($verifyContent, [regex]::Escape($EXE_PATCH_MARKER))).Count
 
     if (($remainingOld -eq 0) -and ($markerCount -ge $totalOldCount)) {
-        Write-Host "   Da patch $totalOldCount block."
+        Write-Host "   Patched $totalOldCount block(s)."
         if ($matched.Count -gt 0) {
             Write-Host "   Match: $($matched -join ', ')"
         }
         return $true
     }
 
-    Write-ColorLine "-> Patch that bai, dang khoi phuc..." "Yellow"
+    Write-ColorLine "-> Patch failed, restoring..." "Yellow"
     Copy-Item $backupPath $ExePath -Force
     return $false
 }
@@ -349,20 +425,20 @@ function Invoke-Restore {
     $backups = Get-ChildItem $cliDir -Filter "cli.js.backup-*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
     
     if (-not $backups -or $backups.Count -eq 0) {
-        Write-ColorLine "X Khong tim thay file backup." "Red"
-        Write-Host "  Ban co the cai lai Claude Code de khoi phuc:"
+        Write-ColorLine "X Backup file not found." "Red"
+        Write-Host "  You can reinstall Claude Code to restore:"
         Write-ColorLine "  npm install -g @anthropic-ai/claude-code" "Green"
         return $false
     }
     
     $latestBackup = $backups[0]
-    Write-ColorLine "-> Dang khoi phuc tu backup..." "Yellow"
+    Write-ColorLine "-> Restoring from backup..." "Yellow"
     Write-Host "   Backup: $($latestBackup.FullName)"
     
     Copy-Item $latestBackup.FullName $CliPath -Force
     Remove-Item $latestBackup.FullName -Force
     
-    Write-ColorLine "OK Da khoi phuc Claude Code ve ban goc." "Green"
+    Write-ColorLine "OK Claude Code restored to original." "Green"
     return $true
 }
 
@@ -374,25 +450,25 @@ function Invoke-RestoreExe {
     $backups = Get-ChildItem $exeDir -Filter "$exeName.backup-*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
 
     if (-not $backups -or $backups.Count -eq 0) {
-        Write-ColorLine "X Khong tim thay file backup." "Red"
+        Write-ColorLine "X Backup file not found." "Red"
         return $false
     }
 
     $latestBackup = $backups[0]
-    Write-ColorLine "-> Dang khoi phuc tu backup..." "Yellow"
+    Write-ColorLine "-> Restoring from backup..." "Yellow"
     Write-Host "   Backup: $($latestBackup.FullName)"
 
     Copy-Item $latestBackup.FullName $ExePath -Force
     Remove-Item $latestBackup.FullName -Force
 
-    Write-ColorLine "OK Da khoi phuc Claude Code ve ban goc." "Green"
+    Write-ColorLine "OK Claude Code restored to original." "Green"
     return $true
 }
 
 function Show-CheckCliJs {
     param([string]$CliPath)
 
-    Write-ColorLine "-> Chay health-check..." "Yellow"
+    Write-ColorLine "-> Running health-check..." "Yellow"
     Write-Host ""
 
     $fileInfo = Get-Item $CliPath -ErrorAction SilentlyContinue
@@ -406,11 +482,11 @@ function Show-CheckCliJs {
     $hasBugCode = ($content -match 'backspace\(\)') -and ($content -match '\\x7f|"\x7f"')
     $canPatchNow = (-not $isPatched) -and $hasBugCode
 
-    Write-Host "   Trang thai: " -NoNewline
-    if ($isPatched) { Write-ColorLine "DA PATCH" "Green" } else { Write-ColorLine "CHUA PATCH" "Red" }
+    Write-Host "   Status:     " -NoNewline
+    if ($isPatched) { Write-ColorLine "PATCHED" "Green" } else { Write-ColorLine "NOT PATCHED" "Red" }
     Write-Host "   Bug code:   " -NoNewline
-    if ($hasBugCode) { Write-ColorLine "Co ton tai" "Yellow" } else { Write-ColorLine "Khong tim thay" "Cyan" }
-    Write-Host "   Co the patch ngay: " -NoNewline
+    if ($hasBugCode) { Write-ColorLine "Present" "Yellow" } else { Write-ColorLine "Not found" "Cyan" }
+    Write-Host "   Can patch now: " -NoNewline
     if ($canPatchNow) { Write-ColorLine "YES" "Green" } else { Write-ColorLine "NO" "DarkYellow" }
 
     $cliDir = Split-Path $CliPath -Parent
@@ -454,7 +530,7 @@ function Show-CheckCliJs {
 function Show-CheckExe {
     param([string]$ExePath)
 
-    Write-ColorLine "-> Chay health-check..." "Yellow"
+    Write-ColorLine "-> Running health-check..." "Yellow"
     Write-Host ""
 
     $fileInfo = Get-Item $ExePath -ErrorAction SilentlyContinue
@@ -478,11 +554,11 @@ function Show-CheckExe {
     $isPatched = ($markerCount -gt 0) -and ($oldCount -eq 0)
     $canPatchNow = ($oldCount -gt 0)
 
-    Write-Host "   Trang thai: " -NoNewline
-    if ($isPatched) { Write-ColorLine "DA PATCH" "Green" } else { Write-ColorLine "CHUA PATCH" "Red" }
+    Write-Host "   Status:     " -NoNewline
+    if ($isPatched) { Write-ColorLine "PATCHED" "Green" } else { Write-ColorLine "NOT PATCHED" "Red" }
     Write-Host "   Bug code:   " -NoNewline
-    if ($oldCount -gt 0) { Write-ColorLine "Co ton tai" "Yellow" } else { Write-ColorLine "Khong tim thay" "Cyan" }
-    Write-Host "   Co the patch ngay: " -NoNewline
+    if ($oldCount -gt 0) { Write-ColorLine "Present" "Yellow" } else { Write-ColorLine "Not found" "Cyan" }
+    Write-Host "   Can patch now: " -NoNewline
     if ($canPatchNow) { Write-ColorLine "YES" "Green" } else { Write-ColorLine "NO" "DarkYellow" }
     Write-Host "   Marker cnt: $markerCount"
     Write-Host "   Old cnt:    $oldCount"
@@ -533,19 +609,19 @@ function Show-CheckExe {
 function Main {
     Write-Header
     
-    Write-ColorLine "-> Dang tim Claude Code..." "Yellow"
+    Write-ColorLine "-> Searching for Claude Code..." "Yellow"
     
     $target = Find-ClaudeTarget
 
     if (-not $target -or -not (Test-Path $target.Path)) {
-        Write-ColorLine "X Khong tim thay Claude Code." "Red"
-        Write-Host "  Vui long cai dat Claude Code hoac kiem tra lai PATH."
+        Write-ColorLine "X Claude Code not found." "Red"
+        Write-Host "  Please install Claude Code or check your PATH."
         return
     }
 
-    Write-ColorLine "   Duong dan: $($target.Path)" "Cyan"
-    Write-ColorLine "   Kieu cai dat: $($target.Type)" "Cyan"
-    Write-ColorLine "   Phien ban: $(Get-ClaudeVersion)" "Cyan"
+    Write-ColorLine "   Path: $($target.Path)" "Cyan"
+    Write-ColorLine "   Install type: $($target.Type)" "Cyan"
+    Write-ColorLine "   Version: $(Get-ClaudeVersion)" "Cyan"
     Write-Host ""
     
     switch ($Action) {
@@ -557,8 +633,18 @@ function Main {
             }
 
             if ($alreadyPatched) {
-                Write-ColorLine "OK Claude Code da duoc patch truoc do." "Green"
+                Write-ColorLine "OK Claude Code was already patched." "Green"
                 return
+            }
+
+            # Check and close running Claude processes
+            $claudeProcesses = Get-ClaudeProcesses
+            if ($claudeProcesses.Count -gt 0) {
+                $stopped = Stop-ClaudeProcesses
+                if (-not $stopped) {
+                    return
+                }
+                Write-Host ""
             }
 
             $patchOk = if ($target.Type -eq 'exe') {
@@ -570,15 +656,15 @@ function Main {
             if ($patchOk) {
                 Write-Host ""
                 Write-ColorLine "============================================================" "Green"
-                Write-ColorLine "  OK Patch thanh cong! Vietnamese IME fix da duoc ap dung." "Green"
+                Write-ColorLine "  OK Patch successful! Vietnamese IME fix has been applied." "Green"
                 Write-ColorLine "============================================================" "Green"
                 Write-Host ""
-                Write-Host "Vui long " -NoNewline
-                Write-ColorLine "khoi dong lai Claude Code" "Yellow" -NoNewline
-                Write-Host " de ap dung thay doi."
+                Write-Host "Please " -NoNewline
+                Write-ColorLine "restart Claude Code" "Yellow" -NoNewline
+                Write-Host " to apply changes."
             } else {
                 Write-Host ""
-                Write-ColorLine "X Khong the ap dung patch." "Red"
+                Write-ColorLine "X Failed to apply patch." "Red"
             }
         }
         
@@ -590,8 +676,18 @@ function Main {
             }
 
             if (-not $isPatched) {
-                Write-ColorLine "Claude Code chua duoc patch." "Yellow"
+                Write-ColorLine "Claude Code is not patched." "Yellow"
                 return
+            }
+
+            # Check and close running Claude processes
+            $claudeProcesses = Get-ClaudeProcesses
+            if ($claudeProcesses.Count -gt 0) {
+                $stopped = Stop-ClaudeProcesses
+                if (-not $stopped) {
+                    return
+                }
+                Write-Host ""
             }
 
             if ($target.Type -eq 'exe') {
