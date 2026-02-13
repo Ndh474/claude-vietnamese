@@ -1,10 +1,8 @@
-# Claude Code Vietnamese IME Fix
+# Claude Code Vietnamese IME Fix (EXE only)
 
 Fixes Vietnamese typing issues in Claude Code CLI (EVKey, UniKey, OpenKey, etc.).
 
-Supported install types:
-- npm package install (`cli.js`)
-- binary install (`claude.exe`)
+Supports: `claude.exe` binary only (no npm required).
 
 ## Problem
 
@@ -16,19 +14,20 @@ In affected Claude Code builds, the DEL/backspace part is handled, but replaceme
 ### Apply patch
 
 ```powershell
-.\ime-claude-code-fix.ps1
+python ime-claude-code-fix.py
 # or
-.\ime-claude-code-fix.ps1 patch
+python ime-claude-code-fix.py patch
 ```
 
 ### Detailed health check
 
 ```powershell
-.\ime-claude-code-fix.ps1 check
+python ime-claude-code-fix.py check
 ```
 
 `check` reports:
-- patch status (`DA PATCH` / `CHUA PATCH`)
+
+- patch status (`PATCHED` / `NOT PATCHED`)
 - whether vulnerable bug pattern still exists
 - whether patch can be applied now
 - write access to install directory
@@ -40,16 +39,17 @@ In affected Claude Code builds, the DEL/backspace part is handled, but replaceme
 ### Restore original build
 
 ```powershell
-.\ime-claude-code-fix.ps1 restore
+python ime-claude-code-fix.py restore
 ```
 
-## Notes For `claude.exe`
+## How It Works
 
 - The script patches `claude.exe` directly using known binary string patterns.
+- If no known pattern matches, it uses a generic regex to auto-detect the buggy block.
 - A backup is created before patch:
   - `claude.exe.backup-<timestamp>`
 - If you need to revert:
-  - `.\ime-claude-code-fix.ps1 restore`
+  - `python ime-claude-code-fix.py restore`
 
 ## After Patching
 
@@ -60,9 +60,9 @@ Restart Claude Code.
 Run patch again after each update:
 
 ```powershell
-.\ime-claude-code-fix.ps1 check
-.\ime-claude-code-fix.ps1 patch
-.\ime-claude-code-fix.ps1 check
+python ime-claude-code-fix.py check
+python ime-claude-code-fix.py patch
+python ime-claude-code-fix.py check
 ```
 
 ## Is It Safe To Run Multiple Times?
@@ -70,7 +70,7 @@ Run patch again after each update:
 Yes.
 
 - `patch` is idempotent: if marker already exists, it will skip and not patch again.
-- `restore` uses the latest backup file and returns to original binary/source.
+- `restore` uses the latest backup file and returns to original binary.
 - Running `check` repeatedly is safe.
 
 If `check` shows already patched, running `patch` again should not break Claude.
@@ -79,77 +79,58 @@ If `check` shows already patched, running `patch` again should not break Claude.
 
 If a new Claude version changes the code location or minified symbols, follow this flow.
 
-### 1. Confirm target type and path
+### 1. Confirm target path
 
 ```powershell
 Get-Command claude | Select-Object Name,Source,CommandType
 ```
 
-- `claude.exe` => binary flow
-- `.cmd/.ps1` wrapper + npm modules => `cli.js` flow
-
 ### 2. Run built-in diagnostics first
 
 ```powershell
-.\ime-claude-code-fix.ps1 check
+python ime-claude-code-fix.py check
 ```
 
-If patch status is not patched and bug pattern is not found, your version likely changed internals.
+If patch status is not patched and bug pattern is not found (both known and generic = 0),
+your version likely changed the internal structure significantly.
 
-### 3. For npm (`cli.js`): find new IME handling block
+### 3. Find new IME handling block
 
-Find candidate areas:
+The script has a **generic regex** that can auto-detect most minified variable name changes.
+If even the generic detection fails, search for the pattern manually:
 
 ```powershell
-$cli = "<path-to-cli.js>"
-rg -n "backspace\\(|\\\\x7f|includes\\(\" $cli
+$exe = "<path-to-claude.exe>"
+$content = [System.IO.File]::ReadAllText($exe, [System.Text.Encoding]::GetEncoding("iso-8859-1"))
+# Search for the buggy pattern structure
+$idx = $content.IndexOf('backspace&&!')
+# Extract surrounding context
+$content.Substring([Math]::Max(0, $idx - 100), 500)
 ```
 
 Look for logic that:
+
 - counts or matches `\x7f`
 - performs backspace/delete operations
 - returns early before inserting replacement text
 
-Then update the `altPatterns` entries in `ime-claude-code-fix.ps1`:
-- `Search`
-- variable mappings (`Var`, `Input`, `Cursor`, `SetOffset`)
-
-### 4. For binary (`claude.exe`): verify known old block still exists
-
-```powershell
-.\ime-claude-code-fix.ps1 check
-```
-
-Focus on:
-- `Old cnt`
-- `Marker cnt`
-
-If `Old cnt` is `0` and `Marker cnt` is `0`, binary pattern changed.
-You must update these constants in `ime-claude-code-fix.ps1`:
-- `$EXE_OLD_BLOCK`
-- `$EXE_NEW_CORE`
+Then add a new entry to the `EXE_PATTERNS` list in `ime-claude-code-fix.py`.
 
 Important:
-- `EXE_NEW_CORE.Length` must be less than or equal to `EXE_OLD_BLOCK.Length`
-- script pads replacement to keep binary size stable
 
-### 5. Safe test workflow before touching real install
+- `new` length must be ≤ `old` length
+- Script pads replacement with spaces to keep binary size stable
 
-1. Copy target file to a test file.
+### 4. Safe test workflow
+
+1. Copy `claude.exe` to a test file.
 2. Patch test file first.
 3. Verify it runs (`--version`, `--help`).
 4. Patch real file only after test success.
 
-Example smoke tests:
+### 5. Permission issues
 
-```powershell
-claude --version
-claude --help
-```
-
-### 6. Permission issues
-
-If check shows write access denied, run patch from an elevated shell or allow elevated execution when prompted.
+If check shows write access denied, run patch from an elevated shell.
 
 ## Fix Logic (Summary)
 
@@ -160,6 +141,7 @@ Patch replays IME input as an ordered stream (delete/insert by event order) befo
 
 | Script version | Claude Code | Date       |
 | -------------- | ----------- | ---------- |
+| 3.0            | v2.1.41     | 2026-02-13 |
 | 2.1            | v2.1.39     | 2026-02-11 |
 | 2.0            | v2.1.38     | 2026-02-10 |
 | 1.1            | v2.1.11     | 2026-01-17 |
