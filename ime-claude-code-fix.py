@@ -36,6 +36,11 @@ EXE_PATCH_MARKER = "/*PHTV_EXE*/"
 
 EXE_PATTERNS = [
     {
+        "version": "v2.1.49",
+        "old": 'if(!EH.backspace&&!EH.delete&&o.includes("\\x7F")){let fH=(o.match(/\\x7f/g)||[]).length,UH=h;for(let VH=0;VH<fH;VH++)UH=UH.deleteTokenBefore()??UH.backspace();if(!h.equals(UH)){if(h.text!==UH.text)$(UH.text);q(UH.offset)}zSH(),CSH();return}',
+        "new": 'if(!EH.backspace&&!EH.delete&&o.includes("\\x7F")){let UH=h;for(let VH of o)UH="\\x08\\x7f".includes(VH)?UH.deleteTokenBefore()??UH.backspace():UH.insert(VH);if(!h.equals(UH)){$(UH.text);q(UH.offset)}/*PHTV_EXE*/zSH(),CSH();return}',
+    },
+    {
         "version": "v2.1.41",
         "old": 'if(!HH.backspace&&!HH.delete&&$H.includes("\\x7F")){let fH=($H.match(/\\x7f/g)||[]).length,YH=h;for(let FH=0;FH<fH;FH++)YH=YH.deleteTokenBefore()??YH.backspace();if(!h.equals(YH)){if(h.text!==YH.text)$(YH.text);O(YH.offset)}iRH(),nRH();return}',
         "new": 'if(!HH.backspace&&!HH.delete&&$H.includes("\\x7F")){let YH=h;for(let FH of $H)YH="\\x08\\x7f".includes(FH)?YH.deleteTokenBefore()??YH.backspace():YH.insert(FH);if(!h.equals(YH)){$(YH.text);O(YH.offset)}/*PHTV_EXE*/iRH(),nRH();return}',
@@ -58,7 +63,7 @@ GENERIC_OLD_RE = re.compile(
     r'if\(!([A-Za-z$_]\w*)\.backspace&&!\1\.delete&&([A-Za-z$_]\w*)\.includes\("\\x7F"\)\)'
     r'\{let \w+=\(\2\.match\(/\\x7f/g\)\|\|\[\]\)\.length,(\w+)=h;'
     r'for\(let (\w+)=0;\4<\w+;\4\+\+\)\3=\3\.deleteTokenBefore\(\)\?\?\3\.backspace\(\);'
-    r'if\(!h\.equals\(\3\)\)\{if\(h\.text!==\3\.text\)\$\(\3\.text\);O\(\3\.offset\)\}'
+    r'if\(!h\.equals\(\3\)\)\{if\(h\.text!==\3\.text\)\$\(\3\.text\);([A-Za-z$_]\w*)\(\3\.offset\)\}'
     r'(\w+\(\),\w+\(\));return\}'
 )
 
@@ -223,10 +228,11 @@ def try_generic_patch(content: str) -> tuple[str, str, str] | None:
     input_var = match.group(2)   # e.g. $H
     cursor_var = match.group(3)  # e.g. YH
     loop_var = match.group(4)    # e.g. FH
-    tail_calls = match.group(5)  # e.g. iRH(),nRH()
+    offset_fn = match.group(5)   # e.g. O or q
+    tail_calls = match.group(6)  # e.g. iRH(),nRH()
 
     # Build replacement: iterate chars instead of counting deletes
-    inner = let_block(cursor_var, loop_var, input_var, tail_calls)
+    inner = let_block(cursor_var, loop_var, input_var, offset_fn, tail_calls)
     new_block = (
         f'if(!{guard_var}.backspace&&!{guard_var}.delete&&{input_var}.includes("\\x7F"))'
         f'{{{inner}}}'
@@ -238,7 +244,7 @@ def try_generic_patch(content: str) -> tuple[str, str, str] | None:
     return (old_block, new_block, "auto-detected")
 
 
-def let_block(cursor_var: str, loop_var: str, input_var: str, tail_calls: str) -> str:
+def let_block(cursor_var: str, loop_var: str, input_var: str, offset_fn: str, tail_calls: str) -> str:
     """Build the inner let block for the fix."""
     return (
         f'let {cursor_var}=h;'
@@ -247,7 +253,7 @@ def let_block(cursor_var: str, loop_var: str, input_var: str, tail_calls: str) -
         f'{cursor_var}.deleteTokenBefore()??{cursor_var}.backspace():'
         f'{cursor_var}.insert({loop_var});'
         f'if(!h.equals({cursor_var}))'
-        f'{{$({cursor_var}.text);O({cursor_var}.offset)}}'
+        f'{{$({cursor_var}.text);{offset_fn}({cursor_var}.offset)}}'
         f'{EXE_PATCH_MARKER}{tail_calls};return'
     )
 
