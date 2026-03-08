@@ -36,6 +36,11 @@ EXE_PATCH_MARKER = "/*PHTV_EXE*/"
 
 EXE_PATTERNS = [
     {
+        "version": "v2.1.71",
+        "old": 'if(!s.backspace&&!s.delete&&fH.includes("\\x7F")){let _H=(fH.match(/\\x7f/g)||[]).length,YH=S;for(let kH=0;kH<_H;kH++)YH=YH.deleteTokenBefore()??YH.backspace();if(!S.equals(YH)){if(S.text!==YH.text)A(YH.text);h(YH.offset)}YdH(),OdH();return}',
+        "new": 'if(!s.backspace&&!s.delete&&fH.includes("\\x7F")){let YH=S;for(let kH of fH)YH="\\x08\\x7f".includes(kH)?YH.deleteTokenBefore()??YH.backspace():YH.insert(kH);if(!S.equals(YH)){A(YH.text);h(YH.offset)}/*PHTV_EXE*/YdH(),OdH();return}',
+    },
+    {
         "version": "v2.1.49",
         "old": 'if(!EH.backspace&&!EH.delete&&o.includes("\\x7F")){let fH=(o.match(/\\x7f/g)||[]).length,UH=h;for(let VH=0;VH<fH;VH++)UH=UH.deleteTokenBefore()??UH.backspace();if(!h.equals(UH)){if(h.text!==UH.text)$(UH.text);q(UH.offset)}zSH(),CSH();return}',
         "new": 'if(!EH.backspace&&!EH.delete&&o.includes("\\x7F")){let UH=h;for(let VH of o)UH="\\x08\\x7f".includes(VH)?UH.deleteTokenBefore()??UH.backspace():UH.insert(VH);if(!h.equals(UH)){$(UH.text);q(UH.offset)}/*PHTV_EXE*/zSH(),CSH();return}',
@@ -59,11 +64,12 @@ EXE_PATTERNS = [
 
 # Generic regex to auto-detect unknown versions
 # Matches the buggy pattern structure regardless of variable names
+# Groups: 1=guard_var, 2=input_var, 3=cursor_var, 4=cursor_init, 5=loop_var, 6=text_fn, 7=offset_fn, 8=tail_calls
 GENERIC_OLD_RE = re.compile(
     r'if\(!([A-Za-z$_]\w*)\.backspace&&!\1\.delete&&([A-Za-z$_]\w*)\.includes\("\\x7F"\)\)'
-    r'\{let \w+=\(\2\.match\(/\\x7f/g\)\|\|\[\]\)\.length,(\w+)=h;'
-    r'for\(let (\w+)=0;\4<\w+;\4\+\+\)\3=\3\.deleteTokenBefore\(\)\?\?\3\.backspace\(\);'
-    r'if\(!h\.equals\(\3\)\)\{if\(h\.text!==\3\.text\)\$\(\3\.text\);([A-Za-z$_]\w*)\(\3\.offset\)\}'
+    r'\{let \w+=\(\2\.match\(/\\x7f/g\)\|\|\[\]\)\.length,(\w+)=([A-Za-z$_]\w*);'
+    r'for\(let (\w+)=0;\5<\w+;\5\+\+\)\3=\3\.deleteTokenBefore\(\)\?\?\3\.backspace\(\);'
+    r'if\(!\4\.equals\(\3\)\)\{if\(\4\.text!==\3\.text\)([A-Za-z$_]\w*)\(\3\.text\);([A-Za-z$_]\w*)\(\3\.offset\)\}'
     r'(\w+\(\),\w+\(\));return\}'
 )
 
@@ -224,15 +230,18 @@ def try_generic_patch(content: str) -> tuple[str, str, str] | None:
 
     old_block = match.group(0)
     # Extract variable names from the match
-    guard_var = match.group(1)   # e.g. HH
-    input_var = match.group(2)   # e.g. $H
-    cursor_var = match.group(3)  # e.g. YH
-    loop_var = match.group(4)    # e.g. FH
-    offset_fn = match.group(5)   # e.g. O or q
-    tail_calls = match.group(6)  # e.g. iRH(),nRH()
+    # Groups: 1=guard_var, 2=input_var, 3=cursor_var, 4=cursor_init, 5=loop_var, 6=text_fn, 7=offset_fn, 8=tail_calls
+    guard_var   = match.group(1)  # e.g. EH, s
+    input_var   = match.group(2)  # e.g. o, fH
+    cursor_var  = match.group(3)  # e.g. UH, YH
+    cursor_init = match.group(4)  # e.g. h, S
+    loop_var    = match.group(5)  # e.g. VH, kH
+    text_fn     = match.group(6)  # e.g. $, A
+    offset_fn   = match.group(7)  # e.g. q, h
+    tail_calls  = match.group(8)  # e.g. zSH(),CSH()
 
     # Build replacement: iterate chars instead of counting deletes
-    inner = let_block(cursor_var, loop_var, input_var, offset_fn, tail_calls)
+    inner = let_block(cursor_var, cursor_init, loop_var, input_var, text_fn, offset_fn, tail_calls)
     new_block = (
         f'if(!{guard_var}.backspace&&!{guard_var}.delete&&{input_var}.includes("\\x7F"))'
         f'{{{inner}}}'
@@ -244,16 +253,16 @@ def try_generic_patch(content: str) -> tuple[str, str, str] | None:
     return (old_block, new_block, "auto-detected")
 
 
-def let_block(cursor_var: str, loop_var: str, input_var: str, offset_fn: str, tail_calls: str) -> str:
+def let_block(cursor_var: str, cursor_init: str, loop_var: str, input_var: str, text_fn: str, offset_fn: str, tail_calls: str) -> str:
     """Build the inner let block for the fix."""
     return (
-        f'let {cursor_var}=h;'
+        f'let {cursor_var}={cursor_init};'
         f'for(let {loop_var} of {input_var})'
         f'{cursor_var}="\\x08\\x7f".includes({loop_var})?'
         f'{cursor_var}.deleteTokenBefore()??{cursor_var}.backspace():'
         f'{cursor_var}.insert({loop_var});'
-        f'if(!h.equals({cursor_var}))'
-        f'{{$({cursor_var}.text);{offset_fn}({cursor_var}.offset)}}'
+        f'if(!{cursor_init}.equals({cursor_var}))'
+        f'{{{text_fn}({cursor_var}.text);{offset_fn}({cursor_var}.offset)}}'
         f'{EXE_PATCH_MARKER}{tail_calls};return'
     )
 

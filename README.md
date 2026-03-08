@@ -141,6 +141,7 @@ Patch replays IME input as an ordered stream (delete/insert by event order) befo
 
 | Script version | Claude Code | Date       |
 | -------------- | ----------- | ---------- |
+| 5.0            | v2.1.71     | 2026-03-08 |
 | 4.0            | v2.1.49     | 2026-02-20 |
 | 3.0            | v2.1.41     | 2026-02-13 |
 | 2.1            | v2.1.39     | 2026-02-11 |
