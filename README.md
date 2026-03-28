@@ -1,8 +1,8 @@
-# Claude Code Vietnamese IME Fix (EXE only)
+# Claude Code Vietnamese IME Fix
 
 Fixes Vietnamese typing issues in Claude Code CLI (EVKey, UniKey, OpenKey, etc.).
 
-Supports: `claude.exe` binary only (no npm required).
+Supports: `claude.exe` (Windows) and `claude` (Linux) binaries (no npm required).
 
 ## Problem
 
@@ -13,16 +13,22 @@ In affected Claude Code builds, the DEL/backspace part is handled, but replaceme
 
 ### Apply patch
 
-```powershell
+```bash
+# Windows (PowerShell)
 python ime-claude-code-fix.py
-# or
 python ime-claude-code-fix.py patch
+
+# Linux
+python3 ime-claude-code-fix.py
+python3 ime-claude-code-fix.py patch
+# If permission denied:
+sudo python3 ime-claude-code-fix.py patch
 ```
 
 ### Detailed health check
 
-```powershell
-python ime-claude-code-fix.py check
+```bash
+python ime-claude-code-fix.py check  # or python3 on Linux
 ```
 
 `check` reports:
@@ -38,16 +44,18 @@ python ime-claude-code-fix.py check
 
 ### Restore original build
 
-```powershell
-python ime-claude-code-fix.py restore
+```bash
+python ime-claude-code-fix.py restore  # or python3 on Linux
 ```
 
 ## How It Works
 
-- The script patches `claude.exe` directly using known binary string patterns.
+- The script auto-detects the OS and searches for the correct binary.
+- It patches the claude binary directly using known string patterns.
 - If no known pattern matches, it uses a generic regex to auto-detect the buggy block.
 - A backup is created before patch:
-  - `claude.exe.backup-<timestamp>`
+  - Windows: `claude.exe.backup-<timestamp>`
+  - Linux: `claude.backup-<timestamp>`
 - If you need to revert:
   - `python ime-claude-code-fix.py restore`
 
@@ -59,7 +67,7 @@ Restart Claude Code.
 
 Run patch again after each update:
 
-```powershell
+```bash
 python ime-claude-code-fix.py check
 python ime-claude-code-fix.py patch
 python ime-claude-code-fix.py check
@@ -81,14 +89,19 @@ If a new Claude version changes the code location or minified symbols, follow th
 
 ### 1. Confirm target path
 
-```powershell
+```bash
+# Windows (PowerShell)
 Get-Command claude | Select-Object Name,Source,CommandType
+
+# Linux
+which claude
+file $(which claude)
 ```
 
 ### 2. Run built-in diagnostics first
 
-```powershell
-python ime-claude-code-fix.py check
+```bash
+python ime-claude-code-fix.py check  # or python3 on Linux
 ```
 
 If patch status is not patched and bug pattern is not found (both known and generic = 0),
@@ -99,13 +112,23 @@ your version likely changed the internal structure significantly.
 The script has a **generic regex** that can auto-detect most minified variable name changes.
 If even the generic detection fails, search for the pattern manually:
 
-```powershell
+```bash
+# Windows (PowerShell)
 $exe = "<path-to-claude.exe>"
 $content = [System.IO.File]::ReadAllText($exe, [System.Text.Encoding]::GetEncoding("iso-8859-1"))
-# Search for the buggy pattern structure
 $idx = $content.IndexOf('backspace&&!')
-# Extract surrounding context
 $content.Substring([Math]::Max(0, $idx - 100), 500)
+
+# Linux
+exe="$(which claude)"
+strings "$exe" | grep -A2 'backspace&&!'
+# or for full context:
+python3 -c "
+import sys
+c = open('$exe','rb').read().decode('latin-1')
+i = c.find('backspace&&!')
+print(c[max(0,i-100):i+400])
+"
 ```
 
 Look for logic that:
@@ -130,7 +153,10 @@ Important:
 
 ### 5. Permission issues
 
-If check shows write access denied, run patch from an elevated shell.
+If check shows write access denied:
+
+- **Windows**: Run patch from an elevated shell (Run as Administrator).
+- **Linux**: Use `sudo python3 ime-claude-code-fix.py patch`.
 
 ## Fix Logic (Summary)
 

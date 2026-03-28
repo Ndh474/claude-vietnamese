@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Claude Code Vietnamese IME Fix (EXE only)
+Claude Code Vietnamese IME Fix
 
 Fixes Vietnamese typing issues in Claude Code CLI (EVKey, UniKey, OpenKey, etc.)
-Supports: claude.exe binary only (no npm)
+Supports: Windows (claude.exe) and Linux (claude) binaries (no npm)
 """
 
 import argparse
 import hashlib
+import platform
 import re
 import shutil
 import subprocess
@@ -24,6 +25,8 @@ except ImportError:
 # Constants
 # =============================================================================
 
+IS_WINDOWS = platform.system() == "Windows"
+BINARY_NAME = "claude.exe" if IS_WINDOWS else "claude"
 EXE_PATCH_MARKER = "/*PHTV_EXE*/"
 
 # Each pattern entry:
@@ -35,6 +38,11 @@ EXE_PATCH_MARKER = "/*PHTV_EXE*/"
 # Use the debugging guide in README.md to find the new pattern.
 
 EXE_PATTERNS = [
+    {
+        "version": "v2.1.86",
+        "old": 'if(!s.backspace&&!s.delete&&t.includes("\\x7F")){let jH=(t.match(/\\x7f/g)||[]).length,GH=S;for(let ZH=0;ZH<jH;ZH++)GH=GH.deleteTokenBefore()??GH.backspace();if(!S.equals(GH)){if(S.text!==GH.text)$(GH.text);R(GH.offset)}h$$(),S$$();return}',
+        "new": 'if(!s.backspace&&!s.delete&&t.includes("\\x7F")){let GH=S;for(let ZH of t)GH="\\x08\\x7f".includes(ZH)?GH.deleteTokenBefore()??GH.backspace():GH.insert(ZH);if(!S.equals(GH)){$(GH.text);R(GH.offset)}/*PHTV_EXE*/h$$(),S$$();return}',
+    },
     {
         "version": "v2.1.71",
         "old": 'if(!s.backspace&&!s.delete&&fH.includes("\\x7F")){let _H=(fH.match(/\\x7f/g)||[]).length,YH=S;for(let kH=0;kH<_H;kH++)YH=YH.deleteTokenBefore()??YH.backspace();if(!S.equals(YH)){if(S.text!==YH.text)A(YH.text);h(YH.offset)}YdH(),OdH();return}',
@@ -69,8 +77,8 @@ GENERIC_OLD_RE = re.compile(
     r'if\(!([A-Za-z$_]\w*)\.backspace&&!\1\.delete&&([A-Za-z$_]\w*)\.includes\("\\x7F"\)\)'
     r'\{let \w+=\(\2\.match\(/\\x7f/g\)\|\|\[\]\)\.length,(\w+)=([A-Za-z$_]\w*);'
     r'for\(let (\w+)=0;\5<\w+;\5\+\+\)\3=\3\.deleteTokenBefore\(\)\?\?\3\.backspace\(\);'
-    r'if\(!\4\.equals\(\3\)\)\{if\(\4\.text!==\3\.text\)([A-Za-z$_]\w*)\(\3\.text\);([A-Za-z$_]\w*)\(\3\.offset\)\}'
-    r'(\w+\(\),\w+\(\));return\}'
+    r'if\(!\4\.equals\(\3\)\)\{if\(\4\.text!==\3\.text\)([A-Za-z$_][\w$]*)\(\3\.text\);([A-Za-z$_][\w$]*)\(\3\.offset\)\}'
+    r'([\w$]+\(\),[\w$]+\(\));return\}'
 )
 
 
@@ -93,8 +101,9 @@ def print_color(text: str, color: str = Colors.RESET, end: str = "\n"):
 def print_header():
     print()
     print_color("=" * 60, Colors.CYAN)
-    print_color("  Claude Code Vietnamese IME Fix (EXE only)", Colors.CYAN)
+    print_color("  Claude Code Vietnamese IME Fix", Colors.CYAN)
     print_color("  Fix Vietnamese typing issues in Claude Code CLI", Colors.CYAN)
+    print_color("  Platform: " + ("Windows" if IS_WINDOWS else "Linux"), Colors.CYAN)
     print_color("=" * 60, Colors.CYAN)
     print()
 
@@ -170,24 +179,39 @@ def stop_claude_processes(force: bool = False) -> bool:
 # Claude EXE detection
 # =============================================================================
 
-def find_claude_exe() -> Path | None:
-    """Find claude.exe binary. Checks PATH first, then common locations."""
+def find_claude_binary() -> Path | None:
+    """Find claude binary. Checks PATH first, then common locations."""
     # 1. Check PATH
     result = shutil.which("claude")
     if result:
         p = Path(result)
-        if p.suffix.lower() == ".exe" and p.exists():
-            return p
+        if IS_WINDOWS:
+            if p.suffix.lower() == ".exe" and p.exists():
+                return p
+        else:
+            if p.exists():
+                return p
 
     # 2. Common install locations
     home = Path.home()
-    candidates = [
-        home / ".local" / "bin" / "claude.exe",
-        home / "AppData" / "Local" / "Programs" / "claude" / "claude.exe",
-        home / "AppData" / "Local" / "claude" / "claude.exe",
-        Path("C:/Program Files/Claude/claude.exe"),
-        Path("C:/Program Files (x86)/Claude/claude.exe"),
-    ]
+
+    if IS_WINDOWS:
+        candidates = [
+            home / ".local" / "bin" / "claude.exe",
+            home / "AppData" / "Local" / "Programs" / "claude" / "claude.exe",
+            home / "AppData" / "Local" / "claude" / "claude.exe",
+            Path("C:/Program Files/Claude/claude.exe"),
+            Path("C:/Program Files (x86)/Claude/claude.exe"),
+        ]
+    else:
+        candidates = [
+            home / ".local" / "bin" / "claude",
+            Path("/usr/local/bin/claude"),
+            Path("/usr/bin/claude"),
+            home / ".claude" / "bin" / "claude",
+            Path("/opt/claude/claude"),
+            Path("/snap/bin/claude"),
+        ]
 
     for path in candidates:
         if path.exists():
@@ -470,7 +494,7 @@ def show_check(path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Claude Code Vietnamese IME Fix (EXE only)",
+        description="Claude Code Vietnamese IME Fix",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Actions:
@@ -490,15 +514,19 @@ Actions:
         print("  Install with: pip install psutil")
         print()
 
-    # Find claude.exe
-    print_color("-> Searching for claude.exe...", Colors.YELLOW)
+    # Find claude binary
+    print_color(f"-> Searching for {BINARY_NAME}...", Colors.YELLOW)
 
-    path = find_claude_exe()
+    path = find_claude_binary()
     if not path:
-        print_color("X claude.exe not found.", Colors.RED)
+        print_color(f"X {BINARY_NAME} not found.", Colors.RED)
         print("  Please install Claude Code or check your PATH.")
         print("  Expected locations:")
-        print(f"    - {Path.home() / '.local' / 'bin' / 'claude.exe'}")
+        if IS_WINDOWS:
+            print(f"    - {Path.home() / '.local' / 'bin' / 'claude.exe'}")
+        else:
+            print(f"    - {Path.home() / '.local' / 'bin' / 'claude'}")
+            print("    - /usr/local/bin/claude")
         print(f"    - PATH: {shutil.which('claude') or 'not found'}")
         return 1
 
@@ -513,7 +541,7 @@ Actions:
 
     elif args.action == "patch":
         if is_exe_patched(path):
-            print_color("OK claude.exe is already patched.", Colors.GREEN)
+            print_color(f"OK {BINARY_NAME} is already patched.", Colors.GREEN)
             return 0
 
         # Stop running processes
@@ -542,7 +570,7 @@ Actions:
 
     elif args.action == "restore":
         if not is_exe_patched(path):
-            print_color("claude.exe is not patched.", Colors.YELLOW)
+            print_color(f"{BINARY_NAME} is not patched.", Colors.YELLOW)
             return 0
 
         # Stop running processes
